@@ -44,7 +44,7 @@ client.on('interactionCreate', async (interaction) => {
           const embed = buildServerEmbed(statusData, { title: '🎮 Bảng Điều Khiển Server Minecraft' });
           const buttons = buildControlButtons(statusData.state);
 
-          await interaction.editReply({ embeds: [embed], components: [buttons] });
+          await interaction.editReply({ embeds: [embed], components: Array.isArray(buttons) ? buttons : [buttons] });
           return;
         }
 
@@ -104,7 +104,7 @@ client.on('interactionCreate', async (interaction) => {
               const statusData = await serverService.getServerStatus();
               const embed = buildServerEmbed(statusData, { title: '🎮 Bảng Điều Khiển Server Minecraft' });
               const buttons = buildControlButtons(statusData.state);
-              await interaction.message.edit({ embeds: [embed], components: [buttons] });
+              await interaction.message.edit({ embeds: [embed], components: Array.isArray(buttons) ? buttons : [buttons] });
             } catch {
               // Bỏ qua lỗi cập nhật lại embed phụ
             }

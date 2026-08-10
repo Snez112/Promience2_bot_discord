@@ -3,6 +3,8 @@ import { EmbedBuilder, ActionRowBuilder, ButtonBuilder, ButtonStyle } from 'disc
 const DEFAULT_MODPACK_URL =
   'https://navillera-my.sharepoint.com/personal/na_navillera_onmicrosoft_com/_layouts/15/onedrive.aspx?id=%2Fpersonal%2Fna%5Fnavillera%5Fonmicrosoft%5Fcom%2FDocuments%2FProminence%E2%84%A2%20II%2D%20Hasturian%20Era%2Ezip&parent=%2Fpersonal%2Fna%5Fnavillera%5Fonmicrosoft%5Fcom%2FDocuments&ga=1';
 
+const DEFAULT_LAUNCHER_URL = 'https://github.com/Diegiwg/PrismLauncher-Cracked';
+
 /**
  * Visual badge & color mapper for server power state
  */
@@ -22,17 +24,19 @@ function getStateInfo(state) {
 }
 
 /**
- * Builds a rich Embed displaying server status including player count & Modpack download link
+ * Builds a rich Embed displaying server status including player count, Modpack & Launcher download links
  * @param {Object} statusData
  * @param {Object} [options]
  * @param {string} [options.title]
  * @param {string} [options.modpackUrl]
+ * @param {string} [options.launcherUrl]
  */
 export function buildServerEmbed(statusData, options = {}) {
   const { state, cpu, memory, disk, players } = statusData || {};
   const stateInfo = getStateInfo(state);
   const title = options.title || '🎮 Bảng Điều Khiển Server Minecraft';
   const modpackUrl = options.modpackUrl || process.env.MODPACK_URL || DEFAULT_MODPACK_URL;
+  const launcherUrl = options.launcherUrl || process.env.LAUNCHER_URL || DEFAULT_LAUNCHER_URL;
 
   const fields = [
     { name: '⚡ TRẠNG THÁI', value: stateInfo.label, inline: true },
@@ -41,7 +45,8 @@ export function buildServerEmbed(statusData, options = {}) {
     { name: '💻 TẢI CPU', value: cpu || '0%', inline: true },
     { name: '🧠 BỘ NHỚ (RAM)', value: memory || '0 MB', inline: true },
     { name: '💾 Ô ĐĨA (DISK)', value: disk || '0 MB', inline: true },
-    { name: '📦 MODPACK', value: `[Tải Modpack Prominence II tại đây](${modpackUrl})`, inline: false },
+    { name: '📦 MODPACK', value: `[Tải Modpack Prominence II tại đây](${modpackUrl})`, inline: true },
+    { name: '🚀 LAUNCHER', value: `[Tải Prism Launcher (Cracked)](${launcherUrl})`, inline: true },
   ];
 
   return new EmbedBuilder()
@@ -53,13 +58,16 @@ export function buildServerEmbed(statusData, options = {}) {
 }
 
 /**
- * Builds control buttons with dynamic disabled states and a Modpack download link button
+ * Builds control buttons with dynamic disabled states and Link buttons for downloads
  * @param {string} [state]
  * @param {string} [modpackUrl]
+ * @param {string} [launcherUrl]
+ * @returns {ActionRowBuilder[]}
  */
-export function buildControlButtons(state = 'unknown', modpackUrl) {
+export function buildControlButtons(state = 'unknown', modpackUrl, launcherUrl) {
   const normalizedState = state?.toLowerCase() || 'unknown';
-  const url = modpackUrl || process.env.MODPACK_URL || DEFAULT_MODPACK_URL;
+  const mUrl = modpackUrl || process.env.MODPACK_URL || DEFAULT_MODPACK_URL;
+  const lUrl = launcherUrl || process.env.LAUNCHER_URL || DEFAULT_LAUNCHER_URL;
 
   const isRunning = normalizedState === 'running';
   const isStarting = normalizedState === 'starting';
@@ -71,7 +79,7 @@ export function buildControlButtons(state = 'unknown', modpackUrl) {
   const isRestartDisabled = isOffline || isStarting || isStopping;
   const isKillDisabled = isOffline;
 
-  return new ActionRowBuilder().addComponents(
+  const controlRow = new ActionRowBuilder().addComponents(
     new ButtonBuilder()
       .setCustomId('server_signal_start')
       .setLabel('Bật Server (Start)')
@@ -98,12 +106,22 @@ export function buildControlButtons(state = 'unknown', modpackUrl) {
       .setLabel('Tắt Ép Buộc (Kill)')
       .setEmoji('⚡')
       .setStyle(ButtonStyle.Danger)
-      .setDisabled(isKillDisabled),
+      .setDisabled(isKillDisabled)
+  );
 
+  const linkRow = new ActionRowBuilder().addComponents(
     new ButtonBuilder()
       .setLabel('Tải Modpack')
       .setEmoji('📦')
       .setStyle(ButtonStyle.Link)
-      .setURL(url)
+      .setURL(mUrl),
+
+    new ButtonBuilder()
+      .setLabel('Tải Launcher')
+      .setEmoji('🚀')
+      .setStyle(ButtonStyle.Link)
+      .setURL(lUrl)
   );
+
+  return [controlRow, linkRow];
 }
