@@ -2,35 +2,38 @@ import WebSocket from 'ws';
 import axios from 'axios';
 
 /**
- * Quản lý kết nối WebSocket thời gian thực tới Pterodactyl Panel
+ * Service quản lý kết nối WebSocket tới Pterodactyl Server Console & Stats
  */
 export class PterodactylWebSocket {
   /**
-   * @param {Object} [options]
-   * @param {string} [options.apiKey]
-   * @param {string} [options.cookie]
-   * @param {string} [options.serverId]
-   * @param {string} [options.baseUrl]
+   * @param {Object} options
+   * @param {string} options.apiKey
+   * @param {string} options.cookie
+   * @param {string} options.serverId
+   * @param {string} options.baseUrl
    */
   constructor(options = {}) {
-    this.apiKey = (options.apiKey ?? process.env.PIKAMC_API_KEY ?? '').trim().replace(/^["']|["']$/g, '');
-    this.cookie = (options.cookie ?? process.env.PIKAMC_COOKIE ?? process.env.PTERODACTYL_COOKIE ?? '').trim();
-    this.serverId = (options.serverId ?? process.env.SERVER_ID ?? '').trim().replace(/^["']|["']$/g, '');
-    this.baseUrl = (options.baseUrl ?? process.env.BASE_URL ?? 'https://cp.pikamc.vn').trim().replace(/\/+$/, '');
+    this.apiKey = options.apiKey || '';
+    this.cookie = options.cookie || '';
+    this.serverId = options.serverId || '';
+    this.baseUrl = (options.baseUrl || 'https://cp.pikamc.vn').replace(/\/+$/, '');
 
+    this.ws = null;
+    this.isConnected = false;
+    this.reconnectTimer = null;
+    this.tokenRefreshInterval = null;
+
+    // Cache thông số server từ WebSocket
     this.state = 'unknown';
     this.cpu = '0%';
     this.memory = '0 MB';
     this.disk = '0 MB';
 
-    this.ws = null;
-    this.reconnectTimer = null;
-    this.isConnected = false;
+    this.consoleLogCallback = null;
   }
 
   /**
-   * Lấy WebSocket credentials từ REST API của Pterodactyl bằng Axios
-   * GET /api/client/servers/{serverId}/websocket
+   * Lấy WebSocket credentials (token & socket URL) từ API Client
    */
   async getWebsocketCredentials() {
     if (!this.apiKey && !this.cookie) {
@@ -38,15 +41,6 @@ export class PterodactylWebSocket {
     }
 
     const url = `${this.baseUrl}/api/client/servers/${this.serverId}/websocket`;
-    const maskedKey = this.apiKey.length > 8 ? `${this.apiKey.substring(0, 8)}...` : this.apiKey;
-
-    console.log(`\n🔍 [API Request] GET ${url}`);
-    if (this.apiKey) {
-      console.log(`🔑 [Authorization Header]: Bearer ${maskedKey}`);
-    }
-    if (this.cookie) {
-      console.log(`🍪 [Cookie Header]: ${this.cookie.substring(0, 30)}...`);
-    }
 
     try {
       const headers = {
@@ -63,13 +57,7 @@ export class PterodactylWebSocket {
       }
 
       const response = await axios.get(url, { headers });
-
-      console.log(`✅ [API Success ${response.status}]: Response Data:`, JSON.stringify(response.data, null, 2));
-
       const data = response.data?.data || response.data;
-
-      console.log(`🔑 [WS Token]: ${data.token ? data.token.substring(0, 30) + '...' : 'N/A'}`);
-      console.log(`📡 [WS Socket URL]: ${data.socket}`);
 
       return {
         token: data.token,
@@ -79,25 +67,34 @@ export class PterodactylWebSocket {
       const status = error.response?.status;
       const responseBody = error.response?.data;
 
-      console.error(`❌ [API Failed Status ${status || 'Network Error'}]:`);
-      if (responseBody) {
-        console.error(`📄 [Response Error Body]:`, JSON.stringify(responseBody, null, 2));
-      } else {
-        console.error(`📄 [Error Message]:`, error.message);
-      }
-
       let errorDetail = error.message;
       if (responseBody) {
-        errorDetail = typeof responseBody === 'string' ? responseBody : JSON.stringify(responseBody);
+        if (Array.isArray(responseBody.errors) && responseBody.errors.length > 0) {
+          errorDetail = responseBody.errors.map((e) => e.detail || e.code || e.title).join(', ');
+        } else if (typeof responseBody === 'string') {
+          errorDetail = responseBody;
+        }
       }
+
       throw new Error(`Không thể lấy WebSocket token (${status || 'Network Error'}): ${errorDetail}`);
     }
   }
 
   /**
-   * Khởi tạo kết nối WebSocket thời gian thực
+   * Đăng ký callback nhận console log thời gian thực
+   * @param {function(string): void} callback
+   */
+  onConsoleLog(callback) {
+    this.consoleLogCallback = callback;
+  }
+
+  /**
+   * Khởi tạo kết nối WebSocket
    */
   async connect() {
+    if (!this.apiKey && !this.cookie) return;
+    if (!this.serverId) return;
+
     try {
       const { token, socket } = await this.getWebsocketCredentials();
 
@@ -107,7 +104,6 @@ export class PterodactylWebSocket {
         } catch {}
       }
 
-      console.log(`🔌 Đang mở kết nối WebSocket tới: ${socket}`);
       this.ws = new WebSocket(socket, {
         origin: this.baseUrl,
       });
@@ -116,7 +112,6 @@ export class PterodactylWebSocket {
         this.isConnected = true;
         console.log('📡 [WebSocket Connected]: Đã mở kết nối thành công!');
         // Gửi tin nhắn xác thực ngay khi mở kết nối
-        console.log('📤 [WebSocket Send]: Sending Auth Token...');
         this.ws.send(JSON.stringify({ event: 'auth', args: [token] }));
         // Yêu cầu lấy thông số stats & status ban đầu
         this.ws.send(JSON.stringify({ event: 'send stats', args: [null] }));
@@ -132,22 +127,25 @@ export class PterodactylWebSocket {
 
       this.ws.on('close', (code, reason) => {
         this.isConnected = false;
-        console.warn(`⚠️ [WebSocket Closed] Code: ${code}, Reason: ${reason || 'N/A'}. Kết nối lại sau 5s...`);
-        this.scheduleReconnect();
+        if (code !== 1000) {
+          console.warn(`⚠️ [WebSocket Closed] Code: ${code}, Reason: ${reason || 'N/A'}. Kết nối lại sau 5s...`);
+          this.scheduleReconnect();
+        }
       });
+
+      this.startTokenRefreshLoop();
     } catch (error) {
       console.error('❌ Lỗi khi khởi tạo kết nối WebSocket:', error.message);
-      // Nếu lỗi 401 (Unauthenticated) hoặc 403 (Forbidden), không lặp lại
-      if (!error.message.includes('401') && !error.message.includes('403')) {
-        this.scheduleReconnect();
-      } else {
+      if (error.message.includes('401') || error.message.includes('403')) {
         console.warn('⚠️ Dừng kết nối lại WebSocket tự động do lỗi xác thực (401/403). Vui lòng kiểm tra lại PIKAMC_API_KEY hoặc PIKAMC_COOKIE trong file .env');
+        return;
       }
+      this.scheduleReconnect();
     }
   }
 
   /**
-   * Xử lý tin nhắn WebSocket nhận từ Pterodactyl
+   * Xử lý tin nhắn đến từ WebSocket
    * @param {string} rawMessage
    */
   handleWsMessage(rawMessage) {
@@ -188,33 +186,39 @@ export class PterodactylWebSocket {
 
         case 'token expiring':
         case 'token expired':
-          console.log('🔄 [WebSocket Token Expiring]: Đang lấy token mới...');
           this.refreshToken();
           break;
-
-        default:
-          break;
       }
-    } catch {
-      // ignore non-json messages
+    } catch {}
+  }
+
+  /**
+   * Lên lịch tự động làm mới WebSocket Token định kỳ (Pterodactyl Token hết hạn sau 10-15 phút)
+   */
+  startTokenRefreshLoop() {
+    this.stopTokenRefreshLoop();
+    // Làm mới token mỗi 10 phút (600,000ms)
+    this.tokenRefreshInterval = setInterval(() => {
+      if (this.isConnected) {
+        this.refreshToken();
+      }
+    }, 10 * 60 * 1000);
+  }
+
+  stopTokenRefreshLoop() {
+    if (this.tokenRefreshInterval) {
+      clearInterval(this.tokenRefreshInterval);
+      this.tokenRefreshInterval = null;
     }
   }
 
   /**
-   * Cài đặt hàm callback nhận log console thời gian thực
-   * @param {(line: string) => void} callback
-   */
-  onConsoleLog(callback) {
-    this.consoleLogCallback = callback;
-  }
-
-  /**
-   * Tự làm mới Token khi nhận thông báo hết hạn từ WebSocket
+   * Làm mới token WebSocket bằng cách lấy token mới và gửi lệnh auth
    */
   async refreshToken() {
     try {
       const { token } = await this.getWebsocketCredentials();
-      if (this.ws && this.ws.readyState === WebSocket.OPEN) {
+      if (this.ws && this.isConnected) {
         this.ws.send(JSON.stringify({ event: 'auth', args: [token] }));
       }
     } catch (error) {
@@ -223,18 +227,18 @@ export class PterodactylWebSocket {
   }
 
   /**
-   * Lên lịch kết nối lại khi mất mạng hoặc ngắt kết nối
+   * Lên lịch kết nối lại khi bị đứt mạng/socket đóng
    */
   scheduleReconnect() {
-    if (this.reconnectTimer) clearTimeout(this.reconnectTimer);
+    if (this.reconnectTimer) return;
     this.reconnectTimer = setTimeout(() => {
+      this.reconnectTimer = null;
       this.connect();
     }, 5000);
   }
 
   /**
-   * Trả về thông tin trạng thái máy chủ hiện tại từ cache WebSocket
-   * @returns {{ state: string, cpu: string, memory: string, disk: string }}
+   * Trả về thông số trạng thái server hiện tại lưu trong cache
    */
   getStatus() {
     return {
@@ -242,18 +246,25 @@ export class PterodactylWebSocket {
       cpu: this.cpu,
       memory: this.memory,
       disk: this.disk,
+      players: null,
     };
   }
 
   /**
-   * Đóng kết nối WebSocket an toàn
+   * Đóng kết nối WebSocket
    */
   close() {
-    if (this.reconnectTimer) clearTimeout(this.reconnectTimer);
+    this.stopTokenRefreshLoop();
+    if (this.reconnectTimer) {
+      clearTimeout(this.reconnectTimer);
+      this.reconnectTimer = null;
+    }
     if (this.ws) {
       try {
         this.ws.close();
       } catch {}
+      this.ws = null;
     }
+    this.isConnected = false;
   }
 }

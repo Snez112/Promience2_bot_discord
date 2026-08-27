@@ -86,8 +86,7 @@ export class ServerControlService {
       return this.serverDetails;
     } catch (error) {
       const status = error.response?.status;
-      const data = error.response?.data;
-      console.error(`❌ [getServerDetails] Lỗi khi gọi Pterodactyl API (${status || 'Network Error'}):`, data || error.message);
+      console.error(`❌ [getServerDetails] Lỗi khi gọi Pterodactyl API (${status || 'Network Error'}):`, error.message);
       return null;
     }
   }
@@ -271,8 +270,7 @@ export class ServerControlService {
       return { state, cpu, memory, disk, players };
     } catch (error) {
       const status = error.response?.status;
-      const data = error.response?.data;
-      console.error(`❌ [getServerStatus] Lỗi khi gọi API resources (${status || 'Network Error'}):`, data || error.message);
+      console.error(`❌ [getServerStatus] Lỗi khi gọi API resources (${status || 'Network Error'}):`, error.message);
       console.log('🔄 [getServerStatus] Thử chuyển sang WebSocket / Direct status fallback...');
       const fallbackStatus = this.pteroWs.getStatus();
       if (!fallbackStatus.players || fallbackStatus.players === '0 / 0') {
