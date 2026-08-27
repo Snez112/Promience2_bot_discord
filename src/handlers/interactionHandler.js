@@ -14,6 +14,45 @@ function isUserAllowed(userId) {
 }
 
 /**
+ * Thử hoãn phản hồi (deferReply) an toàn.
+ * Nếu đã được acknowledge từ trước (hoặc lỗi 40060), hàm luôn trả về true để dùng followUp/editReply.
+ * @param {import('discord.js').Interaction} interaction
+ * @param {boolean} [ephemeral=false]
+ * @returns {Promise<boolean>}
+ */
+async function safeDeferReply(interaction, ephemeral = false) {
+  if (interaction.deferred || interaction.replied) return true;
+  try {
+    const options = ephemeral ? { flags: MessageFlags.Ephemeral } : {};
+    await interaction.deferReply(options);
+    return true;
+  } catch (err) {
+    // Nếu Discord báo 40060 (đã được acknowledge), ta vẫn ghi nhận là true để dùng followUp
+    return true;
+  }
+}
+
+/**
+ * Gửi phản hồi tin nhắn an toàn (FollowUp / EditReply) không bao giờ bị văng 40060
+ * @param {import('discord.js').Interaction} interaction
+ * @param {import('discord.js').InteractionReplyOptions} payload
+ */
+async function safeSendResponse(interaction, payload) {
+  try {
+    if (interaction.deferred || interaction.replied) {
+      return await interaction.followUp(payload);
+    }
+    return await interaction.followUp(payload);
+  } catch (err) {
+    try {
+      return await interaction.reply(payload);
+    } catch {
+      return await interaction.followUp(payload).catch(() => null);
+    }
+  }
+}
+
+/**
  * Handles incoming Discord interactions (slash commands and button clicks)
  * @param {import('discord.js').Interaction} interaction
  * @param {import('../services/serverControlService.js').ServerControlService} serverService
@@ -91,11 +130,11 @@ export async function handleInteraction(interaction, serverService) {
         }
 
         if (subcommand === 'panel') {
-          await interaction.deferReply();
+          await safeDeferReply(interaction);
           const status = await serverService.getServerStatus();
           const embed = buildServerEmbed(status);
           const buttons = buildControlButtons(status.state);
-          await interaction.followUp({
+          await safeSendResponse(interaction, {
             embeds: [embed],
             components: [buttons],
           });
@@ -103,20 +142,20 @@ export async function handleInteraction(interaction, serverService) {
         }
 
         if (subcommand === 'status') {
-          await interaction.deferReply();
+          await safeDeferReply(interaction);
           const status = await serverService.getServerStatus();
           const embed = buildServerEmbed(status);
-          await interaction.followUp({ embeds: [embed] });
+          await safeSendResponse(interaction, { embeds: [embed] });
           return;
         }
 
         if (subcommand === 'signal') {
-          await interaction.deferReply();
+          await safeDeferReply(interaction);
           const action = interaction.options.getString('action', true);
           const resultMessage = await serverService.sendPowerSignal(action);
           const status = await serverService.getServerStatus();
           const updatedEmbed = buildServerEmbed(status);
-          await interaction.followUp({
+          await safeSendResponse(interaction, {
             content: resultMessage,
             embeds: [updatedEmbed],
           });
@@ -130,9 +169,7 @@ export async function handleInteraction(interaction, serverService) {
       const customId = interaction.customId;
       console.log(`🔘 [Button Click] ${customId} từ user: ${interaction.user?.tag} (${interaction.user?.id})`);
 
-      if (!interaction.deferred && !interaction.replied) {
-        await interaction.deferReply({ flags: MessageFlags.Ephemeral });
-      }
+      await safeDeferReply(interaction, true);
 
       let action = customId;
       if (customId.startsWith('btn_')) {
@@ -141,7 +178,7 @@ export async function handleInteraction(interaction, serverService) {
 
       if (['start', 'stop', 'restart', 'kill'].includes(action)) {
         const resultMessage = await serverService.sendPowerSignal(action);
-        await interaction.followUp({
+        await safeSendResponse(interaction, {
           content: resultMessage,
           flags: MessageFlags.Ephemeral,
         });
@@ -162,20 +199,16 @@ export async function handleInteraction(interaction, serverService) {
       }
     }
   } catch (error) {
-    console.error('❌ Lỗi xảy ra khi xử lý interaction:', error);
+    if (error.code === 40060 || error.message?.includes('already been acknowledged')) {
+      return;
+    }
+    console.error('❌ Lỗi xảy ra khi xử lý interaction:', error.message);
 
     try {
-      if (!interaction.deferred && !interaction.replied) {
-        await interaction.reply({
-          content: '❌ **Lỗi:** Đã xảy ra lỗi khi thực hiện yêu cầu.',
-          flags: MessageFlags.Ephemeral,
-        });
-      } else {
-        await interaction.followUp({
-          content: '❌ **Lỗi:** Đã xảy ra lỗi khi thực hiện yêu cầu.',
-          flags: MessageFlags.Ephemeral,
-        });
-      }
+      await safeSendResponse(interaction, {
+        content: '❌ **Lỗi:** Đã xảy ra lỗi khi thực hiện yêu cầu.',
+        flags: MessageFlags.Ephemeral,
+      });
     } catch {}
   }
 }
