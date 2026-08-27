@@ -2,30 +2,41 @@ import fs from 'fs';
 import path from 'path';
 
 const DEFAULT_CONFIG_PATH = path.join(process.cwd(), 'config', 'guilds.json');
+const TEST_CONFIG_PATH = path.join(process.cwd(), 'config', 'test_guilds.json');
+
+function resolveConfigPath(filePath) {
+  if (filePath) return filePath;
+  if (process.env.VITEST || process.env.NODE_ENV === 'test') {
+    return TEST_CONFIG_PATH;
+  }
+  return DEFAULT_CONFIG_PATH;
+}
 
 /**
  * Ensures configuration directory and file exist
- * @param {string} filePath
+ * @param {string} [filePath]
  */
-function ensureConfigFile(filePath = DEFAULT_CONFIG_PATH) {
-  const dir = path.dirname(filePath);
+function ensureConfigFile(filePath) {
+  const targetPath = resolveConfigPath(filePath);
+  const dir = path.dirname(targetPath);
   if (!fs.existsSync(dir)) {
     fs.mkdirSync(dir, { recursive: true });
   }
-  if (!fs.existsSync(filePath)) {
-    fs.writeFileSync(filePath, JSON.stringify({}, null, 2), 'utf8');
+  if (!fs.existsSync(targetPath)) {
+    fs.writeFileSync(targetPath, JSON.stringify({}, null, 2), 'utf8');
   }
 }
 
 /**
  * Loads all guild configs
- * @param {string} filePath
+ * @param {string} [filePath]
  * @returns {Record<string, { logChannelId?: string }>}
  */
-export function loadGuildConfigs(filePath = DEFAULT_CONFIG_PATH) {
+export function loadGuildConfigs(filePath) {
+  const targetPath = resolveConfigPath(filePath);
   try {
-    ensureConfigFile(filePath);
-    const content = fs.readFileSync(filePath, 'utf8');
+    ensureConfigFile(targetPath);
+    const content = fs.readFileSync(targetPath, 'utf8');
     return JSON.parse(content || '{}');
   } catch (err) {
     console.error('❌ Lỗi đọc file config guilds:', err.message);
@@ -36,12 +47,13 @@ export function loadGuildConfigs(filePath = DEFAULT_CONFIG_PATH) {
 /**
  * Saves guild configs to disk
  * @param {Record<string, any>} data
- * @param {string} filePath
+ * @param {string} [filePath]
  */
-export function saveGuildConfigs(data, filePath = DEFAULT_CONFIG_PATH) {
+export function saveGuildConfigs(data, filePath) {
+  const targetPath = resolveConfigPath(filePath);
   try {
-    ensureConfigFile(filePath);
-    fs.writeFileSync(filePath, JSON.stringify(data, null, 2), 'utf8');
+    ensureConfigFile(targetPath);
+    fs.writeFileSync(targetPath, JSON.stringify(data, null, 2), 'utf8');
   } catch (err) {
     console.error('❌ Lỗi ghi file config guilds:', err.message);
   }
@@ -51,26 +63,28 @@ export function saveGuildConfigs(data, filePath = DEFAULT_CONFIG_PATH) {
  * Sets the log channel ID for a specific guild
  * @param {string} guildId
  * @param {string} channelId
- * @param {string} filePath
+ * @param {string} [filePath]
  */
-export function setGuildLogChannel(guildId, channelId, filePath = DEFAULT_CONFIG_PATH) {
+export function setGuildLogChannel(guildId, channelId, filePath) {
   if (!guildId) return;
-  const configs = loadGuildConfigs(filePath);
+  const targetPath = resolveConfigPath(filePath);
+  const configs = loadGuildConfigs(targetPath);
   configs[guildId] = {
     ...(configs[guildId] || {}),
     logChannelId: channelId,
   };
-  saveGuildConfigs(configs, filePath);
+  saveGuildConfigs(configs, targetPath);
 }
 
 /**
  * Gets the log channel ID for a specific guild
  * @param {string} guildId
- * @param {string} filePath
+ * @param {string} [filePath]
  * @returns {string | null}
  */
-export function getGuildLogChannel(guildId, filePath = DEFAULT_CONFIG_PATH) {
+export function getGuildLogChannel(guildId, filePath) {
   if (!guildId) return null;
-  const configs = loadGuildConfigs(filePath);
+  const targetPath = resolveConfigPath(filePath);
+  const configs = loadGuildConfigs(targetPath);
   return configs[guildId]?.logChannelId || null;
 }
