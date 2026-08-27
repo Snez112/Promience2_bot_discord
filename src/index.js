@@ -2,9 +2,9 @@ import { Client, GatewayIntentBits } from 'discord.js';
 import dotenv from 'dotenv';
 import { ServerControlService } from './services/serverControlService.js';
 import { buildServerEmbed, buildControlButtons } from './ui/serverEmbed.js';
+import http from 'http';
 
 dotenv.config();
-const http = require('http');
 const token = process.env.DISCORD_TOKEN;
 if (!token) {
   console.warn('⚠️ CẢNH BÁO: DISCORD_TOKEN chưa được cài đặt trong file .env');
