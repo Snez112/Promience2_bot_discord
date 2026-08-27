@@ -67,9 +67,6 @@ export class ServerControlService {
   /**
    * Lấy chi tiết thông tin cấu hình và allocations của máy chủ
    */
-  /**
-   * Lấy chi tiết thông tin cấu hình và allocations của máy chủ
-   */
   async getServerDetails() {
     if (this.serverDetails) return this.serverDetails;
 
@@ -93,6 +90,7 @@ export class ServerControlService {
 
   /**
    * Truy vấn số người chơi đang online (Ưu tiên Direct TCP Socket -> Web APIs Fallback)
+   * Tối ưu hóa phản hồi song song và giới hạn tối đa 1200ms để không làm chậm Discord Slash Commands.
    */
   async getOnlinePlayerCount() {
     try {
@@ -103,55 +101,56 @@ export class ServerControlService {
       const ip = process.env.SERVER_IP || primaryAlloc?.attributes?.ip_alias || primaryAlloc?.attributes?.ip || 'meteor.pikamc.vn';
       const port = Number(process.env.SERVER_PORT || primaryAlloc?.attributes?.port || 25364);
 
-      // 1. Ưu tiên: Kết nối TCP trực tiếp từ Bot tới Server Minecraft (Nhanh nhất & Không phụ thuộc Web API ngoài)
-      try {
-        console.log(`⚡ [getOnlinePlayerCount] Kiểm tra trực tiếp qua TCP Socket SLP (${ip}:${port})...`);
-        const mcStatus = await pingMinecraftServer(ip, port, 1500);
-        if (mcStatus && mcStatus.online) {
-          const result = `${mcStatus.playersOnline} / ${mcStatus.playersMax}`;
-          console.log(`✅ [getOnlinePlayerCount] (Direct TCP SLP) Người chơi online: ${result}`);
-          return result;
-        }
-      } catch (tcpErr) {
-        console.warn(`⚠️ [getOnlinePlayerCount] Direct TCP SLP thất bại (${tcpErr.message}), thử qua Web APIs dự phòng...`);
-      }
+      // Wrapper song song với timeout cứng 1200ms
+      const queryWithTimeout = new Promise((resolve) => {
+        let isResolved = false;
 
-      // 2. Dự phòng 1: Thử qua mcstatus.io
-      try {
-        console.log(`🎮 [getOnlinePlayerCount] Đang kiểm tra người chơi qua mcstatus.io (${ip}:${port})`);
-        const response = await axios.get(`https://api.mcstatus.io/v2/status/java/${ip}:${port}`, {
-          timeout: 2000,
+        const timer = setTimeout(() => {
+          if (!isResolved) {
+            isResolved = true;
+            resolve(null);
+          }
+        }, 1200);
+
+        const tryTcp = pingMinecraftServer(ip, port, 1000)
+          .then((res) => (res?.online ? `${res.playersOnline} / ${res.playersMax}` : null))
+          .catch(() => null);
+
+        const tryMcStatus = axios.get(`https://api.mcstatus.io/v2/status/java/${ip}:${port}`, { timeout: 1000 })
+          .then((res) => (res.data?.online && res.data?.players ? `${res.data.players.online} / ${res.data.players.max}` : null))
+          .catch(() => null);
+
+        const tryMcsrv = axios.get(`https://api.mcsrvstat.us/2/${ip}:${port}`, { timeout: 1000 })
+          .then((res) => (res.data?.online && res.data?.players ? `${res.data.players.online} / ${res.data.players.max}` : null))
+          .catch(() => null);
+
+        // Thử theo thứ tự TCP -> mcstatus.io -> mcsrvstat.us
+        tryTcp.then((res) => {
+          if (res && !isResolved) {
+            isResolved = true;
+            clearTimeout(timer);
+            return resolve(res);
+          }
+          tryMcStatus.then((res2) => {
+            if (res2 && !isResolved) {
+              isResolved = true;
+              clearTimeout(timer);
+              return resolve(res2);
+            }
+            tryMcsrv.then((res3) => {
+              if (res3 && !isResolved) {
+                isResolved = true;
+                clearTimeout(timer);
+                return resolve(res3);
+              }
+            });
+          });
         });
+      });
 
-        if (response.data?.online && response.data?.players) {
-          const result = `${response.data.players.online} / ${response.data.players.max}`;
-          console.log(`✅ [getOnlinePlayerCount] (mcstatus.io) Người chơi online: ${result}`);
-          return result;
-        }
-      } catch (err) {
-        console.warn(`⚠️ [getOnlinePlayerCount] mcstatus.io bị lỗi (${err.response?.status || err.message}), chuyển sang API dự phòng (mcsrvstat.us)...`);
-      }
-
-      // 3. Dự phòng 2: Fallback qua mcsrvstat.us
-      try {
-        console.log(`🎮 [getOnlinePlayerCount] Đang kiểm tra người chơi qua mcsrvstat.us (${ip}:${port})`);
-        const response = await axios.get(`https://api.mcsrvstat.us/2/${ip}:${port}`, {
-          timeout: 4000,
-        });
-
-        if (response.data?.online && response.data?.players) {
-          const result = `${response.data.players.online} / ${response.data.players.max}`;
-          console.log(`✅ [getOnlinePlayerCount] (mcsrvstat.us) Người chơi online: ${result}`);
-          return result;
-        }
-      } catch (err) {
-        console.warn(`⚠️ [getOnlinePlayerCount] mcsrvstat.us bị lỗi:`, err.message);
-      }
-
-      console.log(`ℹ️ [getOnlinePlayerCount] Server offline hoặc các API status không phản hồi (${ip}:${port})`);
-      return '0 / 0';
-    } catch (error) {
-      console.warn(`⚠️ [getOnlinePlayerCount] Không thể lấy thông tin người chơi:`, error.message);
+      const result = await queryWithTimeout;
+      return result || '0 / 0';
+    } catch {
       return '0 / 0';
     }
   }
@@ -159,7 +158,6 @@ export class ServerControlService {
   /**
    * Gửi tín hiệu điều khiển nguồn tới server bằng Axios
    * @param {'start' | 'stop' | 'restart' | 'kill'} signal
-   * @returns {Promise<{ success: boolean, signal: string, message: string }>}
    */
   async sendPowerSignal(signal) {
     if (!ServerControlService.ALLOWED_SIGNALS.includes(signal)) {
@@ -175,8 +173,8 @@ export class ServerControlService {
 
     try {
       const headers = {
-        'Content-Type': 'application/json',
         'Accept': 'application/json',
+        'Content-Type': 'application/json',
       };
 
       if (this.apiKey) {
@@ -188,8 +186,8 @@ export class ServerControlService {
       }
 
       await axios.post(url, { signal }, { headers });
-      console.log(`✅ [sendPowerSignal] Gửi signal "${signal}" thành công!`);
 
+      console.log(`✅ [sendPowerSignal] Gửi signal "${signal}" thành công!`);
       return {
         success: true,
         signal,
