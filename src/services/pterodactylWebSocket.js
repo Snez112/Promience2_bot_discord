@@ -157,12 +157,9 @@ export class PterodactylWebSocket {
 
       if (!event || !Array.isArray(args)) return;
 
-      console.log(`📥 [WebSocket Event]: "${event}"`, args.length > 0 ? (args[0]?.length > 100 ? `${args[0].substring(0, 100)}...` : args[0]) : '');
-
       switch (event) {
         case 'status':
           this.state = args[0] || 'unknown';
-          console.log(`📊 [Status Updated]: ${this.state}`);
           break;
 
         case 'stats':
@@ -179,8 +176,13 @@ export class PterodactylWebSocket {
               if (stats.state) {
                 this.state = stats.state;
               }
-              console.log(`📈 [Stats Updated]: State=${this.state} | CPU=${this.cpu} | RAM=${this.memory} | Disk=${this.disk}`);
             } catch {}
+          }
+          break;
+
+        case 'console output':
+          if (args[0] && typeof this.consoleLogCallback === 'function') {
+            this.consoleLogCallback(args[0]);
           }
           break;
 
@@ -196,6 +198,14 @@ export class PterodactylWebSocket {
     } catch {
       // ignore non-json messages
     }
+  }
+
+  /**
+   * Cài đặt hàm callback nhận log console thời gian thực
+   * @param {(line: string) => void} callback
+   */
+  onConsoleLog(callback) {
+    this.consoleLogCallback = callback;
   }
 
   /**

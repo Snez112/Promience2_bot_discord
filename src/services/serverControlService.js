@@ -1,5 +1,6 @@
 import axios from 'axios';
 import { PterodactylWebSocket } from './pterodactylWebSocket.js';
+import { pingMinecraftServer } from '../utils/mcPing.js';
 
 /**
  * Format số bytes sang dạng GiB hoặc MB chuẩn Pterodactyl
@@ -66,10 +67,14 @@ export class ServerControlService {
   /**
    * Lấy chi tiết thông tin cấu hình và allocations của máy chủ
    */
+  /**
+   * Lấy chi tiết thông tin cấu hình và allocations của máy chủ
+   */
   async getServerDetails() {
     if (this.serverDetails) return this.serverDetails;
 
     const url = `${this.baseUrl}/api/client/servers/${this.serverId}?include=allocations`;
+    console.log(`🔍 [getServerDetails] Đang lấy thông tin server (${this.serverId}) từ ${url}`);
     try {
       const headers = { Accept: 'application/json' };
       if (this.apiKey) headers['Authorization'] = `Bearer ${this.apiKey}`;
@@ -77,14 +82,18 @@ export class ServerControlService {
 
       const response = await axios.get(url, { headers });
       this.serverDetails = response.data?.attributes || null;
+      console.log(`✅ [getServerDetails] Thành công lấy thông tin cấu hình server "${this.serverDetails?.name || this.serverId}"`);
       return this.serverDetails;
-    } catch {
+    } catch (error) {
+      const status = error.response?.status;
+      const data = error.response?.data;
+      console.error(`❌ [getServerDetails] Lỗi khi gọi Pterodactyl API (${status || 'Network Error'}):`, data || error.message);
       return null;
     }
   }
 
   /**
-   * Truy vấn số người chơi đang online qua Minecraft Java Status Protocol (mcstatus.io)
+   * Truy vấn số người chơi đang online (Ưu tiên Direct TCP Socket -> Web APIs Fallback)
    */
   async getOnlinePlayerCount() {
     try {
@@ -92,19 +101,59 @@ export class ServerControlService {
       const allocations = details?.relationships?.allocations?.data || [];
       const primaryAlloc = allocations.find(a => a.attributes?.is_default) || allocations[0];
 
-      const ip = primaryAlloc?.attributes?.ip_alias || primaryAlloc?.attributes?.ip || 'meteor.pikamc.vn';
-      const port = primaryAlloc?.attributes?.port || 25364;
+      const ip = process.env.SERVER_IP || primaryAlloc?.attributes?.ip_alias || primaryAlloc?.attributes?.ip || 'meteor.pikamc.vn';
+      const port = Number(process.env.SERVER_PORT || primaryAlloc?.attributes?.port || 25364);
 
-      const response = await axios.get(`https://api.mcstatus.io/v2/status/java/${ip}:${port}`, {
-        timeout: 3000,
-      });
-
-      if (response.data?.online && response.data?.players) {
-        return `${response.data.players.online} / ${response.data.players.max}`;
+      // 1. Ưu tiên: Kết nối TCP trực tiếp từ Bot tới Server Minecraft (Nhanh nhất & Không phụ thuộc Web API ngoài)
+      try {
+        console.log(`⚡ [getOnlinePlayerCount] Kiểm tra trực tiếp qua TCP Socket SLP (${ip}:${port})...`);
+        const mcStatus = await pingMinecraftServer(ip, port, 3000);
+        if (mcStatus && mcStatus.online) {
+          const result = `${mcStatus.playersOnline} / ${mcStatus.playersMax}`;
+          console.log(`✅ [getOnlinePlayerCount] (Direct TCP SLP) Người chơi online: ${result}`);
+          return result;
+        }
+      } catch (tcpErr) {
+        console.warn(`⚠️ [getOnlinePlayerCount] Direct TCP SLP thất bại (${tcpErr.message}), thử qua Web APIs dự phòng...`);
       }
+
+      // 2. Dự phòng 1: Thử qua mcstatus.io
+      try {
+        console.log(`🎮 [getOnlinePlayerCount] Đang kiểm tra người chơi qua mcstatus.io (${ip}:${port})`);
+        const response = await axios.get(`https://api.mcstatus.io/v2/status/java/${ip}:${port}`, {
+          timeout: 3000,
+        });
+
+        if (response.data?.online && response.data?.players) {
+          const result = `${response.data.players.online} / ${response.data.players.max}`;
+          console.log(`✅ [getOnlinePlayerCount] (mcstatus.io) Người chơi online: ${result}`);
+          return result;
+        }
+      } catch (err) {
+        console.warn(`⚠️ [getOnlinePlayerCount] mcstatus.io bị lỗi (${err.response?.status || err.message}), chuyển sang API dự phòng (mcsrvstat.us)...`);
+      }
+
+      // 3. Dự phòng 2: Fallback qua mcsrvstat.us
+      try {
+        console.log(`🎮 [getOnlinePlayerCount] Đang kiểm tra người chơi qua mcsrvstat.us (${ip}:${port})`);
+        const response = await axios.get(`https://api.mcsrvstat.us/2/${ip}:${port}`, {
+          timeout: 4000,
+        });
+
+        if (response.data?.online && response.data?.players) {
+          const result = `${response.data.players.online} / ${response.data.players.max}`;
+          console.log(`✅ [getOnlinePlayerCount] (mcsrvstat.us) Người chơi online: ${result}`);
+          return result;
+        }
+      } catch (err) {
+        console.warn(`⚠️ [getOnlinePlayerCount] mcsrvstat.us bị lỗi:`, err.message);
+      }
+
+      console.log(`ℹ️ [getOnlinePlayerCount] Server offline hoặc các API status không phản hồi (${ip}:${port})`);
       return '0 / 0';
-    } catch {
-      return null;
+    } catch (error) {
+      console.warn(`⚠️ [getOnlinePlayerCount] Không thể lấy thông tin người chơi:`, error.message);
+      return '0 / 0';
     }
   }
 
@@ -123,6 +172,7 @@ export class ServerControlService {
     }
 
     const url = `${this.baseUrl}/api/client/servers/${this.serverId}/power`;
+    console.log(`🚀 [sendPowerSignal] Đang gửi signal "${signal}" tới server ${this.serverId} tại ${url}`);
 
     try {
       const headers = {
@@ -139,6 +189,7 @@ export class ServerControlService {
       }
 
       await axios.post(url, { signal }, { headers });
+      console.log(`✅ [sendPowerSignal] Gửi signal "${signal}" thành công!`);
 
       return {
         success: true,
@@ -152,6 +203,7 @@ export class ServerControlService {
         const data = error.response.data;
         errorDetail = data.errors?.[0]?.detail || data.message || (typeof data === 'string' ? data : JSON.stringify(data));
       }
+      console.error(`❌ [sendPowerSignal] Lỗi từ Pterodactyl API (${status || 'Network Error'}):`, errorDetail);
       throw new Error(`Lỗi từ Pterodactyl API (${status || 'Network Error'}): ${errorDetail}`);
     }
   }
@@ -162,12 +214,14 @@ export class ServerControlService {
    */
   async getServerStatus() {
     if (!this.apiKey && !this.cookie) {
+      console.error('❌ [getServerStatus] Chưa cấu hình API Key hoặc Cookie trong file .env');
       throw new Error('Chưa cấu hình API Key hoặc Cookie');
     }
 
     const details = await this.getServerDetails();
     const limits = details?.limits || null;
     const url = `${this.baseUrl}/api/client/servers/${this.serverId}/resources`;
+    console.log(`📊 [getServerStatus] Đang lấy tài nguyên server (${this.serverId}) từ ${url}`);
 
     try {
       const headers = {
@@ -213,9 +267,18 @@ export class ServerControlService {
         players = await this.getOnlinePlayerCount();
       }
 
+      console.log(`✅ [getServerStatus] Lấy thông tin thành công: State=${state}, RAM=${memory}, CPU=${cpu}, Disk=${disk}`);
       return { state, cpu, memory, disk, players };
-    } catch {
-      return this.pteroWs.getStatus();
+    } catch (error) {
+      const status = error.response?.status;
+      const data = error.response?.data;
+      console.error(`❌ [getServerStatus] Lỗi khi gọi API resources (${status || 'Network Error'}):`, data || error.message);
+      console.log('🔄 [getServerStatus] Thử chuyển sang WebSocket / Direct status fallback...');
+      const fallbackStatus = this.pteroWs.getStatus();
+      if (!fallbackStatus.players || fallbackStatus.players === '0 / 0') {
+        fallbackStatus.players = await this.getOnlinePlayerCount();
+      }
+      return fallbackStatus;
     }
   }
 }

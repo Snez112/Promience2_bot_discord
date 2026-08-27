@@ -1,4 +1,4 @@
-import { SlashCommandBuilder } from 'discord.js';
+import { SlashCommandBuilder, ChannelType } from 'discord.js';
 
 export const serverCommand = new SlashCommandBuilder()
   .setName('server')
@@ -29,4 +29,21 @@ export const serverCommand = new SlashCommandBuilder()
             { name: '⚡ Kill (Tắt ép buộc)', value: 'kill' }
           )
       )
+  )
+  .addSubcommand((subcommand) =>
+    subcommand
+      .setName('setlog')
+      .setDescription('Cài đặt kênh nhận thông báo log Minecraft (Chỉ Authorized User)')
+      .addChannelOption((option) =>
+        option
+          .setName('channel')
+          .setDescription('Kênh nhận thông báo log')
+          .addChannelTypes(ChannelType.GuildText)
+          .setRequired(true)
+      )
+  )
+  .addSubcommand((subcommand) =>
+    subcommand
+      .setName('testlog')
+      .setDescription('Gửi một tin nhắn log thử nghiệm tới kênh đã cài đặt (Chỉ Authorized User)')
   );

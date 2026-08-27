@@ -1,6 +1,7 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 import axios from 'axios';
 import { ServerControlService } from '../src/services/serverControlService.js';
+import * as mcPing from '../src/utils/mcPing.js';
 
 describe('ServerControlService with Axios', () => {
   const mockConfig = {
@@ -77,6 +78,7 @@ describe('ServerControlService with Axios', () => {
 
   describe('getServerStatus', () => {
     it('should fetch server details using axios', async () => {
+      vi.spyOn(mcPing, 'pingMinecraftServer').mockRejectedValue(new Error('TCP Error'));
       const service = new ServerControlService(mockConfig);
       vi.spyOn(axios, 'get').mockImplementation((url) => {
         if (url.includes('mcstatus.io')) {
@@ -132,6 +134,31 @@ describe('ServerControlService with Axios', () => {
       expect(status.memory).toBe('5.9 GiB / 10 GiB');
       expect(status.disk).toBe('10.0 GiB / 40 GiB');
       expect(status.players).toBe('3 / 50');
+    });
+
+    it('should fallback to mcstatus.io query even if Pterodactyl API fails with 401', async () => {
+      vi.spyOn(mcPing, 'pingMinecraftServer').mockRejectedValue(new Error('TCP Error'));
+      const service = new ServerControlService(mockConfig);
+      vi.spyOn(axios, 'get').mockImplementation((url) => {
+        if (url.includes('mcstatus.io')) {
+          return Promise.resolve({
+            status: 200,
+            data: {
+              online: true,
+              players: { online: 5, max: 100 },
+            },
+          });
+        }
+        return Promise.reject({
+          response: { status: 401, data: 'Unauthenticated.' },
+        });
+      });
+
+      const players = await service.getOnlinePlayerCount();
+      expect(players).toBe('5 / 100');
+
+      const status = await service.getServerStatus();
+      expect(status.players).toBe('5 / 100');
     });
   });
 });
