@@ -106,7 +106,7 @@ export class ServerControlService {
       // 1. Ưu tiên: Kết nối TCP trực tiếp từ Bot tới Server Minecraft (Nhanh nhất & Không phụ thuộc Web API ngoài)
       try {
         console.log(`⚡ [getOnlinePlayerCount] Kiểm tra trực tiếp qua TCP Socket SLP (${ip}:${port})...`);
-        const mcStatus = await pingMinecraftServer(ip, port, 3000);
+        const mcStatus = await pingMinecraftServer(ip, port, 1500);
         if (mcStatus && mcStatus.online) {
           const result = `${mcStatus.playersOnline} / ${mcStatus.playersMax}`;
           console.log(`✅ [getOnlinePlayerCount] (Direct TCP SLP) Người chơi online: ${result}`);
@@ -120,7 +120,7 @@ export class ServerControlService {
       try {
         console.log(`🎮 [getOnlinePlayerCount] Đang kiểm tra người chơi qua mcstatus.io (${ip}:${port})`);
         const response = await axios.get(`https://api.mcstatus.io/v2/status/java/${ip}:${port}`, {
-          timeout: 3000,
+          timeout: 2000,
         });
 
         if (response.data?.online && response.data?.players) {
