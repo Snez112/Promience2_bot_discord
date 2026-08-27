@@ -4,7 +4,7 @@ import { ServerControlService } from './services/serverControlService.js';
 import { buildServerEmbed, buildControlButtons } from './ui/serverEmbed.js';
 
 dotenv.config();
-
+const http = require('http');
 const token = process.env.DISCORD_TOKEN;
 if (!token) {
   console.warn('⚠️ CẢNH BÁO: DISCORD_TOKEN chưa được cài đặt trong file .env');
@@ -126,6 +126,20 @@ client.on('interactionCreate', async (interaction) => {
     }
   }
 });
+const PORT = process.env.PORT || 10000;
+const server = http.createServer((req, res) => {
+  if (req.url === '/health') {
+    res.writeHead(200, { 'Content-Type': 'text/plain' });
+    return res.end('ok');
+  }
+  res.writeHead(200, { 'Content-Type': 'text/plain' });
+  res.end('DBD bot is running');
+});
+server.listen(PORT, '0.0.0.0', () => {
+  console.log('HTTP listening on', PORT);
+});
+
+process.on('SIGTERM', () => server.close(() => process.exit(0)));
 
 if (token) {
   client.login(token);
