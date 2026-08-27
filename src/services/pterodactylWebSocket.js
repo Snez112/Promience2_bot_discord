@@ -22,6 +22,7 @@ export class PterodactylWebSocket {
     this.isConnected = false;
     this.reconnectTimer = null;
     this.tokenRefreshInterval = null;
+    this.reconnectAttempts = 0;
 
     // Cache thông số server từ WebSocket
     this.state = 'unknown';
@@ -96,7 +97,11 @@ export class PterodactylWebSocket {
     if (!this.serverId) return;
 
     try {
-      const { token, socket } = await this.getWebsocketCredentials();
+      let { token, socket } = await this.getWebsocketCredentials();
+
+      if (process.env.WS_HOST_OVERRIDE) {
+        socket = socket.replace(/wss?:\/\/[^\/]+/, `wss://${process.env.WS_HOST_OVERRIDE}`);
+      }
 
       if (this.ws) {
         try {
@@ -110,6 +115,7 @@ export class PterodactylWebSocket {
 
       this.ws.on('open', () => {
         this.isConnected = true;
+        this.reconnectAttempts = 0;
         console.log('📡 [WebSocket Connected]: Đã mở kết nối thành công!');
         // Gửi tin nhắn xác thực ngay khi mở kết nối
         this.ws.send(JSON.stringify({ event: 'auth', args: [token] }));
@@ -122,20 +128,26 @@ export class PterodactylWebSocket {
       });
 
       this.ws.on('error', (err) => {
-        console.error('⚠️ [WebSocket Error]:', err.message);
+        if (this.reconnectAttempts <= 2) {
+          console.warn('⚠️ [WebSocket Error]:', err.message);
+        }
       });
 
       this.ws.on('close', (code, reason) => {
         this.isConnected = false;
         if (code !== 1000) {
-          console.warn(`⚠️ [WebSocket Closed] Code: ${code}, Reason: ${reason || 'N/A'}. Kết nối lại sau 5s...`);
+          if (this.reconnectAttempts <= 2) {
+            console.warn(`⚠️ [WebSocket Closed] Code: ${code}, Reason: ${reason || 'N/A'}.`);
+          }
           this.scheduleReconnect();
         }
       });
 
       this.startTokenRefreshLoop();
     } catch (error) {
-      console.error('❌ Lỗi khi khởi tạo kết nối WebSocket:', error.message);
+      if (this.reconnectAttempts <= 2) {
+        console.error('❌ Lỗi khi khởi tạo kết nối WebSocket:', error.message);
+      }
       if (error.message.includes('401') || error.message.includes('403')) {
         console.warn('⚠️ Dừng kết nối lại WebSocket tự động do lỗi xác thực (401/403). Vui lòng kiểm tra lại PIKAMC_API_KEY hoặc PIKAMC_COOKIE trong file .env');
         return;
@@ -227,14 +239,23 @@ export class PterodactylWebSocket {
   }
 
   /**
-   * Lên lịch kết nối lại khi bị đứt mạng/socket đóng
+   * Lên lịch kết nối lại khi bị đứt mạng/socket đóng với thuật toán Exponential Backoff
    */
   scheduleReconnect() {
     if (this.reconnectTimer) return;
+    this.reconnectAttempts++;
+
+    // Exponential Backoff: 5s, 15s, 30s, 60s, max 120s
+    const delay = Math.min(5000 * Math.pow(2, this.reconnectAttempts - 1), 120000);
+
+    if (this.reconnectAttempts <= 2) {
+      console.warn(`⚠️ [WebSocket Disconnected]: Thử kết nối lại lần ${this.reconnectAttempts} sau ${Math.round(delay / 1000)}s...`);
+    }
+
     this.reconnectTimer = setTimeout(() => {
       this.reconnectTimer = null;
       this.connect();
-    }, 5000);
+    }, delay);
   }
 
   /**
